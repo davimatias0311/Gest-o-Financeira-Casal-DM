@@ -1,0 +1,2075 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Gestão Financeira</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel para converter JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Chart.js para gráficos -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a1a1a;
+            color: #f3f4f6;
+        }
+        .icon {
+            display: inline-block;
+            vertical-align: middle;
+        }
+        /* Custom styles to reduce table spacing */
+        .table-condensed th, .table-condensed td {
+            padding: 0.5rem 0.75rem; /* Reduced spacing */
+        }
+        .table-condensed input, .table-condensed select {
+            padding: 0.25rem 0.5rem; /* Reduced input spacing */
+        }
+        .text-green-500 {
+            color: #22c55e;
+        }
+        .text-red-500 {
+            color: #ef4444;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const { createRoot } = ReactDOM;
+
+        // Firebase Config - Mocked for offline functionality
+        const __firebase_config = "{}";
+        const __app_id = "default-app-id";
+        const __initial_auth_token = "";
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [contasAPagar, setContasAPagar] = useState([]);
+            const [contasAReceber, setContasAReceber] = useState([]);
+            const [poupanca, setPoupanca] = useState([]);
+            const [modal, setModal] = useState(null);
+            const [filtroMes, setFiltroMes] = useState(new Date().toISOString().substring(0, 7));
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+            const chartPoupancaTiposRef = useRef(null);
+            const chartPoupancaBancosRef = useRef(null);
+            const chartPoupancaHistoricoRef = useRef(null);
+            
+            // New states for recurrent and installment bills
+            const [contasRecorrentes, setContasRecorrentes] = useState([]);
+            const [contasParceladas, setContasParceladas] = useState([]);
+            const [contasRecorrentesReceber, setContasRecorrentesReceber] = useState([]);
+            const [editingReceita, setEditingReceita] = useState(null);
+            const [poupancaTipo, setPoupancaTipo] = useState('Reserva de Emergência');
+            const [contasBancarias, setContasBancarias] = useState(['Nubank', 'Caixa', 'Itaú', 'Bradesco', 'Banco do Brasil', 'Outro']);
+            const [loading, setLoading] = useState(false);
+            const [geminiResult, setGeminiResult] = useState(null);
+            
+            // New states for Goal Planning feature
+            const [goalPrompt, setGoalPrompt] = useState('');
+            const [goalValue, setGoalValue] = useState(0);
+            const [planningResult, setPlanningResult] = useState(null);
+            const [isPlanning, setIsPlanning] = useState(false);
+
+            // New states for Savings Goals
+            const [metas, setMetas] = useState([]);
+            const [editingMeta, setEditingMeta] = useState(null);
+
+            // New states for Debts feature
+            const [dividas, setDividas] = useState([]);
+            const [modalNegociar, setModalNegociar] = useState(null);
+
+            // New states for TTS feature
+            const [audioPlaying, setAudioPlaying] = useState(false);
+            const [ttsError, setTtsError] = useState(null);
+            const audioContextRef = useRef(null);
+            const audioSourceRef = useRef(null);
+
+            const apiKey = ""; // Canvas will provide this in runtime
+
+            // Color definitions for each expense type
+            const expenseColors = {
+                'Aluguel': '#ff6384',
+                'Salário': '#36a2eb',
+                'Alimentação': '#cc65fe',
+                'Transporte': '#ff9f40',
+                'Saúde': '#4bc0c0',
+                'Educação': '#9966ff',
+                'Lazer': '#ffcd56',
+                'Outros': '#c9cbcf',
+            };
+            
+            // Colors for savings charts
+            const poupancaColors = {
+                'Reserva de Emergência': '#36a2eb',
+                'Caixa para Contas': '#ffcd56',
+                'Investimentos': '#4bc0c0'
+            };
+
+            // Effect to generate recurrent bills (to pay and to receive) on month change
+            useEffect(() => {
+                const generateRecurrentBills = () => {
+                    const mesFiltro = filtroMes.substring(5, 7);
+                    const anoFiltro = filtroMes.substring(0, 4);
+                    
+                    const novasContasPagar = contasRecorrentes.filter(conta => {
+                        const jaGerada = contasAPagar.some(c => 
+                            c.id === `rec-${conta.id}-${anoFiltro}-${mesFiltro}`
+                        );
+                        return !jaGerada;
+                    }).map(conta => ({
+                        ...conta,
+                        id: `rec-${conta.id}-${anoFiltro}-${mesFiltro}`, // Unique ID for each instance
+                        dataVencimento: `${filtroMes}-${conta.dataVencimento.split('-')[2]}`, // Keep the day
+                        tipoConta: 'Fixa'
+                    }));
+                    
+                    if (novasContasPagar.length > 0) {
+                        setContasAPagar(prev => [...prev, ...novasContasPagar]);
+                    }
+                };
+                
+                const generateRecurrentIncome = () => {
+                    const mesFiltro = filtroMes.substring(5, 7);
+                    const anoFiltro = filtroMes.substring(0, 4);
+                    
+                    const novasContasReceber = contasRecorrentesReceber.filter(conta => {
+                        const jaGerada = contasAReceber.some(c =>
+                            c.id === `rec-inc-${conta.id}-${anoFiltro}-${mesFiltro}`
+                        );
+                        return !jaGerada;
+                    }).map(conta => ({
+                        ...conta,
+                        id: `rec-inc-${conta.id}-${anoFiltro}-${mesFiltro}`, // Unique ID for each instance
+                        dataRecebimento: `${filtroMes}-${conta.dataRecebimento.split('-')[2]}`, // Keep the day
+                        tipoConta: 'Fixa'
+                    }));
+                    
+                    if (novasContasReceber.length > 0) {
+                        setContasAReceber(prev => [...prev, ...novasContasReceber]);
+                    }
+                };
+
+                const generateInstallmentBills = () => {
+                    const novasParcelas = contasParceladas.flatMap(parcelamento => {
+                        const { id, descricao, valorTotal, numParcelas, dataPrimeiraParcela, tipo, banco, proprietario } = parcelamento;
+                        const valorParcela = valorTotal / numParcelas;
+                        
+                        let parcelasGeradas = [];
+                        for (let i = 0; i < numParcelas; i++) {
+                            const dataVencimento = new Date(dataPrimeiraParcela);
+                            dataVencimento.setMonth(dataVencimento.getMonth() + i);
+                            
+                            const mesConta = dataVencimento.toISOString().substring(5, 7);
+                            const anoConta = dataVencimento.toISOString().substring(0, 4);
+
+                            if (mesConta === filtroMes.substring(5, 7) && anoConta === filtroMes.substring(0, 4)) {
+                                const jaGerada = contasAPagar.some(c => c.id === `${id}-${i}`);
+                                if (!jaGerada) {
+                                    parcelasGeradas.push({
+                                        id: `${id}-${i}`,
+                                        descricao: `${descricao} (Parc. ${i + 1}/${numParcelas})`,
+                                        tipo: tipo,
+                                        valor: valorParcela,
+                                        dataVencimento: dataVencimento.toISOString().substring(0, 10),
+                                        pago: false,
+                                        tipoConta: 'Parcelada',
+                                        banco: banco,
+                                        proprietario: proprietario
+                                    });
+                                }
+                            }
+                        }
+                        return parcelasGeradas;
+                    });
+                    
+                    if (novasParcelas.length > 0) {
+                        setContasAPagar(prev => [...prev, ...novasParcelas]);
+                    }
+                };
+
+                generateRecurrentBills();
+                generateRecurrentIncome();
+                generateInstallmentBills();
+            }, [filtroMes]);
+
+            const openModal = (type, title, message, action) => {
+                setModal({ type, title, message, action });
+            };
+
+            const closeModal = () => {
+                setModal(null);
+            };
+
+            const handleModalAction = () => {
+                if (modal && modal.action) {
+                    modal.action();
+                }
+                closeModal();
+            };
+            
+            const handleEditReceita = (receita) => {
+                setEditingReceita(receita);
+            };
+
+            const handleSaveEditReceita = (e) => {
+                e.preventDefault();
+                const newValor = parseFloat(e.target.newValor.value);
+                const newDescricao = e.target.newDescricao.value;
+
+                setContasRecorrentesReceber(prev => prev.map(conta => 
+                    conta.id === editingReceita.id 
+                        ? { ...conta, valor: newValor, descricao: newDescricao }
+                        : conta
+                ));
+                setEditingReceita(null);
+                openModal('alert', 'Sucesso', 'Receita recorrente atualizada com sucesso!');
+            };
+
+            const handleAddContaAPagar = (e) => {
+                e.preventDefault();
+                const tipoConta = e.target.tipoConta.value;
+                const novaConta = {
+                    id: Date.now(),
+                    descricao: e.target.descricao.value,
+                    tipo: e.target.tipo.value,
+                    valor: parseFloat(e.target.valor.value),
+                    dataVencimento: e.target.dataVencimento.value,
+                    pago: false,
+                    tipoConta: tipoConta,
+                    banco: e.target.banco.value,
+                    proprietario: e.target.proprietario.value,
+                };
+                
+                if (tipoConta === 'Fixa') {
+                    setContasRecorrentes(prev => [...prev, novaConta]);
+                    openModal('alert', 'Sucesso', 'Conta fixa adicionada com sucesso e será gerada automaticamente todo mês.');
+                } else {
+                    setContasAPagar(prev => [...prev, novaConta]);
+                    openModal('alert', 'Sucesso', 'Conta adicionada com sucesso!');
+                }
+                e.target.reset();
+            };
+
+            const handleAddContaParcelada = (e) => {
+                e.preventDefault();
+                const novaConta = {
+                    id: Date.now(),
+                    descricao: e.target.descricao.value,
+                    tipo: e.target.tipo.value,
+                    valorTotal: parseFloat(e.target.valorTotal.value),
+                    numParcelas: parseInt(e.target.numParcelas.value),
+                    dataPrimeiraParcela: e.target.dataPrimeiraParcela.value,
+                    banco: e.target.banco.value,
+                    proprietario: e.target.proprietario.value,
+                };
+                
+                setContasParceladas(prev => [...prev, novaConta]);
+                openModal('alert', 'Sucesso', 'Conta parcelada criada com sucesso. As parcelas serão geradas automaticamente.');
+                e.target.reset();
+            };
+
+            const handleTogglePago = (id) => {
+                setContasAPagar(contasAPagar.map(conta => 
+                    conta.id === id ? { ...conta, pago: !conta.pago } : conta
+                ));
+            };
+
+            const handleDeleteContaAPagar = (id) => {
+                setContasAPagar(contasAPagar.filter(conta => conta.id !== id));
+            };
+
+            const handleAddContaAReceber = (e) => {
+                e.preventDefault();
+                const tipoConta = e.target.tipoConta.value;
+                const novaConta = {
+                    id: Date.now(),
+                    descricao: e.target.descricao.value,
+                    tipo: e.target.tipo.value,
+                    valor: parseFloat(e.target.valor.value),
+                    dataRecebimento: e.target.dataRecebimento.value,
+                    recebido: false,
+                    tipoConta: tipoConta,
+                    banco: e.target.banco.value,
+                };
+                
+                if (tipoConta === 'Fixa') {
+                    setContasRecorrentesReceber(prev => [...prev, novaConta]);
+                    openModal('alert', 'Sucesso', 'Receita fixa adicionada com sucesso e será gerada automaticamente todo mês.');
+                } else {
+                    setContasAReceber(prev => [...prev, novaConta]);
+                    openModal('alert', 'Sucesso', 'Receita adicionada com sucesso!');
+                }
+                e.target.reset();
+            };
+            
+            const handleToggleRecebido = (id) => {
+                setContasAReceber(contasAReceber.map(conta =>
+                    conta.id === id ? { ...conta, recebido: !conta.recebido } : conta
+                ));
+            };
+
+            const handleDeleteContaAReceber = (id) => {
+                const contaToDelete = contasAReceber.find(c => c.id === id);
+                if (contaToDelete.tipoConta === 'Fixa') {
+                     // Remove the original recurrent bill, not the monthly instance
+                    setContasRecorrentesReceber(prev => prev.filter(c => `rec-inc-${c.id}-${filtroMes.split('-')[0]}-${filtroMes.split('-')[1]}` !== id));
+                }
+                setContasAReceber(contasAReceber.filter(conta => conta.id !== id));
+            };
+
+            const handleAddPoupanca = (e) => {
+                e.preventDefault();
+                const novaPoupanca = {
+                    id: Date.now(),
+                    valor: parseFloat(e.target.valor.value),
+                    tipo: e.target.tipo.value,
+                    subtipo: e.target.subtipo?.value || null, // Subtype for investments
+                    data: e.target.data.value,
+                    banco: e.target.banco.value, // Add bank here
+                };
+
+                setPoupanca(prev => [...prev, novaPoupanca]);
+                openModal('alert', 'Sucesso', 'Registro de poupança adicionado com sucesso!');
+                e.target.reset();
+            };
+
+            const handleDeletePoupanca = (id) => {
+                setPoupanca(poupanca.filter(item => item.id !== id));
+            };
+            
+            const handleAddMeta = (e) => {
+                e.preventDefault();
+                const novaMeta = {
+                    id: Date.now(),
+                    descricao: e.target.descricao.value,
+                    valorMeta: parseFloat(e.target.valorMeta.value),
+                    valorAtual: 0,
+                    contribuicoes: [],
+                };
+                setMetas(prev => [...prev, novaMeta]);
+                openModal('alert', 'Sucesso', 'Meta adicionada com sucesso!');
+                e.target.reset();
+            };
+
+            const handleDeleteMeta = (id) => {
+                openModal('confirm', 'Confirmar Exclusão', 'Tem certeza que deseja excluir esta meta e todas as suas contribuições?', () => {
+                    setMetas(metas.filter(meta => meta.id !== id));
+                    openModal('alert', 'Sucesso', 'Meta excluída com sucesso.');
+                });
+            };
+            
+            const handleUpdateMeta = (e) => {
+                e.preventDefault();
+                const updatedDescricao = e.target.descricao.value;
+                const updatedValorMeta = parseFloat(e.target.valorMeta.value);
+
+                setMetas(prev => prev.map(meta => 
+                    meta.id === editingMeta.id 
+                        ? { ...meta, descricao: updatedDescricao, valorMeta: updatedValorMeta }
+                        : meta
+                ));
+                setEditingMeta(null);
+                openModal('alert', 'Sucesso', 'Meta atualizada com sucesso!');
+            };
+
+            const handleAddContribuicao = (e, metaId) => {
+                e.preventDefault();
+                const valor = parseFloat(e.target.valor.value);
+                const data = e.target.data.value;
+                const proprietario = e.target.proprietario.value;
+
+                if (!valor || !data) {
+                    openModal('alert', 'Erro', 'Por favor, preencha o valor e a data da contribuição.');
+                    return;
+                }
+
+                setMetas(prev => prev.map(meta => {
+                    if (meta.id === metaId) {
+                        const novaContribuicao = { id: Date.now(), valor, data, proprietario };
+                        return {
+                            ...meta,
+                            valorAtual: meta.valorAtual + valor,
+                            contribuicoes: [...meta.contribuicoes, novaContribuicao]
+                        };
+                    }
+                    return meta;
+                }));
+                e.target.reset();
+            };
+
+            const handleAddBanco = (e) => {
+                e.preventDefault();
+                const novoBanco = e.target.nomeBanco.value.trim();
+                if (novoBanco === '') {
+                    openModal('alert', 'Erro', 'O nome da conta bancária não pode ser vazio.');
+                    return;
+                }
+                if (contasBancarias.includes(novoBanco)) {
+                    openModal('alert', 'Erro', 'Esta conta bancária já existe.');
+                    return;
+                }
+                setContasBancarias(prev => [...prev, novoBanco]);
+                openModal('alert', 'Sucesso', 'Conta bancária adicionada com sucesso!');
+                e.target.reset();
+            };
+
+            const handleAddDivida = (e) => {
+                e.preventDefault();
+                const novaDivida = {
+                    id: Date.now(),
+                    descricao: e.target.descricao.value,
+                    valorTotal: parseFloat(e.target.valorTotal.value),
+                    valorPago: 0,
+                    dataInicio: e.target.dataInicio.value,
+                    status: 'Ativa'
+                };
+                setDividas(prev => [...prev, novaDivida]);
+                openModal('alert', 'Sucesso', 'Dívida adicionada com sucesso!');
+                e.target.reset();
+            };
+
+            const handleDeleteDivida = (id) => {
+                openModal('confirm', 'Confirmar Exclusão', 'Tem certeza que deseja excluir esta dívida?', () => {
+                    setDividas(dividas.filter(divida => divida.id !== id));
+                    openModal('alert', 'Sucesso', 'Dívida excluída com sucesso.');
+                });
+            };
+
+            const handleNegociarDivida = (e) => {
+                e.preventDefault();
+                if (!modalNegociar) return;
+
+                const valorNegociado = parseFloat(e.target.valorTotal.value);
+                const numParcelas = parseInt(e.target.numParcelas.value);
+                
+                const novaContaParcelada = {
+                    id: Date.now(),
+                    descricao: `Negociação: ${modalNegociar.descricao}`,
+                    tipo: 'Outros',
+                    valorTotal: valorNegociado,
+                    numParcelas: numParcelas,
+                    dataPrimeiraParcela: e.target.dataPrimeiraParcela.value,
+                    banco: e.target.banco.value,
+                    proprietario: e.target.proprietario.value,
+                };
+
+                setContasParceladas(prev => [...prev, novaContaParcelada]);
+
+                setDividas(prev => prev.map(d => 
+                    d.id === modalNegociar.id ? { ...d, status: 'Negociada' } : d
+                ));
+
+                setModalNegociar(null);
+                openModal('alert', 'Sucesso', 'Dívida negociada e lançada como conta parcelada!');
+            };
+
+            const handleDeleteBanco = (nomeBanco) => {
+                openModal('confirm', 'Confirmar Exclusão', `Tem certeza que deseja excluir a conta bancária "${nomeBanco}"?`, () => {
+                    setContasBancarias(prev => prev.filter(banco => banco !== nomeBanco));
+                    openModal('alert', 'Sucesso', 'Conta bancária excluída com sucesso.');
+                });
+            };
+
+            const getDadosFiltrados = () => {
+                const mesFiltro = filtroMes.substring(5, 7);
+                const anoFiltro = filtroMes.substring(0, 4);
+                
+                const aPagarFiltradas = contasAPagar.filter(conta => {
+                    const mesConta = conta.dataVencimento.substring(5, 7);
+                    const anoConta = conta.dataVencimento.substring(0, 4);
+                    return mesConta === mesFiltro && anoConta === anoFiltro;
+                });
+
+                const aReceberFiltradas = contasAReceber.filter(conta => {
+                    const mesConta = conta.dataRecebimento.substring(5, 7);
+                    const anoConta = conta.dataRecebimento.substring(0, 4);
+                    return mesConta === mesFiltro && anoConta === anoFiltro;
+                });
+
+                return { aPagarFiltradas, aReceberFiltradas };
+            };
+
+            const getDashboardData = () => {
+                const { aPagarFiltradas, aReceberFiltradas } = getDadosFiltrados();
+
+                const totalAPagar = aPagarFiltradas.reduce((acc, conta) => acc + conta.valor, 0);
+                const totalRecebido = aReceberFiltradas.filter(c => c.recebido).reduce((acc, conta) => acc + conta.valor, 0);
+                const totalAReceber = aReceberFiltradas.reduce((acc, conta) => acc + conta.valor, 0);
+                const totalPago = aPagarFiltradas.filter(c => c.pago).reduce((acc, conta) => acc + conta.valor, 0);
+
+                const saldoMes = totalRecebido - totalAPagar;
+                
+                // Group expenses by type for the chart
+                const despesasPorTipo = aPagarFiltradas.reduce((acc, conta) => {
+                    acc[conta.tipo] = (acc[conta.tipo] || 0) + conta.valor;
+                    return acc;
+                }, {});
+
+                // Calculate expenses by owner
+                const despesasDavi = aPagarFiltradas.filter(c => c.proprietario === 'Davi');
+                const despesasMaryaClara = aPagarFiltradas.filter(c => c.proprietario === 'Marya Clara');
+                const despesasAmbos = aPagarFiltradas.filter(c => c.proprietario === 'Ambos');
+
+                const totalDespesasDavi = despesasDavi.reduce((acc, conta) => acc + conta.valor, 0);
+                const totalDespesasMaryaClara = despesasMaryaClara.reduce((acc, conta) => acc + conta.valor, 0);
+                
+                return {
+                    totalAPagar,
+                    totalRecebido,
+                    totalAReceber,
+                    totalPago,
+                    saldoMes,
+                    despesasPorTipo,
+                    aPagarFiltradas,
+                    aReceberFiltradas,
+                    despesasDavi,
+                    despesasMaryaClara,
+                    despesasAmbos,
+                    totalDespesasDavi,
+                    totalDespesasMaryaClara,
+                };
+            };
+            
+            const getPoupancaData = () => {
+                // Total by savings type
+                const totalPorTipo = poupanca.reduce((acc, item) => {
+                    acc[item.tipo] = (acc[item.tipo] || 0) + item.valor;
+                    return acc;
+                }, {});
+            
+                // Total by bank account
+                const totalPorBanco = poupanca.reduce((acc, item) => {
+                    acc[item.banco] = (acc[item.banco] || 0) + item.valor;
+                    return acc;
+                }, {});
+            
+                // Historical values over time (cumulative)
+                const historico = [];
+                const poupancaOrdenada = [...poupanca].sort((a, b) => new Date(a.data) - new Date(b.data));
+                let valorAcumulado = 0;
+            
+                poupancaOrdenada.forEach(item => {
+                    valorAcumulado += item.valor;
+                    historico.push({
+                        data: item.data,
+                        valor: valorAcumulado
+                    });
+                });
+            
+                return { totalPorTipo, totalPorBanco, historico };
+            };
+            
+            const generateChart = (data) => {
+                if (!chartRef.current) return;
+                if (chartInstance.current) {
+                    chartInstance.current.destroy();
+                }
+
+                const ctx = chartRef.current.getContext('2d');
+                
+                const labels = Object.keys(data.despesasPorTipo);
+                const values = Object.values(data.despesasPorTipo);
+                
+                const backgroundColors = labels.map(label => expenseColors[label] || expenseColors['Outros']);
+                const borderColors = backgroundColors;
+                
+                chartInstance.current = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Total de Despesas por Tipo',
+                            data: values,
+                            backgroundColor: backgroundColors,
+                            borderColor: borderColors,
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: {
+                                position: 'top',
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        let label = context.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.parsed !== null) {
+                                            label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed);
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            };
+
+            const generatePoupancaCharts = () => {
+                const { totalPorTipo, totalPorBanco, historico } = getPoupancaData();
+
+                // Chart 1: Distribution by Savings Type
+                if (chartPoupancaTiposRef.current) {
+                    if (chartPoupancaTiposRef.current.chart) {
+                        chartPoupancaTiposRef.current.chart.destroy();
+                    }
+                    const ctxTipos = chartPoupancaTiposRef.current.getContext('2d');
+                    const labelsTipos = Object.keys(totalPorTipo);
+                    const valuesTipos = Object.values(totalPorTipo);
+                    const colorsTipos = labelsTipos.map(label => poupancaColors[label] || '#c9cbcf');
+
+                    chartPoupancaTiposRef.current.chart = new Chart(ctxTipos, {
+                        type: 'pie',
+                        data: {
+                            labels: labelsTipos,
+                            datasets: [{
+                                label: 'Total por Tipo de Poupança',
+                                data: valuesTipos,
+                                backgroundColor: colorsTipos,
+                                borderColor: colorsTipos,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: { position: 'top' },
+                                title: { display: true, text: 'Distribuição por Tipo de Poupança' },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (context) => {
+                                            let label = context.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed !== null) {
+                                                label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            
+                // Chart 2: Distribution by Bank Account
+                if (chartPoupancaBancosRef.current) {
+                    if (chartPoupancaBancosRef.current.chart) {
+                        chartPoupancaBancosRef.current.chart.destroy();
+                    }
+                    const ctxBancos = chartPoupancaBancosRef.current.getContext('2d');
+                    const labelsBancos = Object.keys(totalPorBanco);
+                    const valuesBancos = Object.values(totalPorBanco);
+                    const backgroundColors = labelsBancos.map((_, i) => `hsl(${i * 360 / labelsBancos.length}, 70%, 50%)`);
+
+                    chartPoupancaBancosRef.current.chart = new Chart(ctxBancos, {
+                        type: 'pie',
+                        data: {
+                            labels: labelsBancos,
+                            datasets: [{
+                                label: 'Total por Conta Bancária',
+                                data: valuesBancos,
+                                backgroundColor: backgroundColors,
+                                borderColor: backgroundColors,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: { position: 'top' },
+                                title: { display: true, text: 'Distribuição por Conta Bancária' },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (context) => {
+                                            let label = context.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed !== null) {
+                                                label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // Chart 3: Savings History
+                if (chartPoupancaHistoricoRef.current) {
+                    if (chartPoupancaHistoricoRef.current.chart) {
+                        chartPoupancaHistoricoRef.current.chart.destroy();
+                    }
+                    const ctxHistorico = chartPoupancaHistoricoRef.current.getContext('2d');
+                    const labelsHistorico = historico.map(item => item.data);
+                    const valuesHistorico = historico.map(item => item.valor);
+
+                    chartPoupancaHistoricoRef.current.chart = new Chart(ctxHistorico, {
+                        type: 'line',
+                        data: {
+                            labels: labelsHistorico,
+                            datasets: [{
+                                label: 'Valor Total Acumulado',
+                                data: valuesHistorico,
+                                borderColor: '#22c55e',
+                                backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                                fill: true,
+                                tension: 0.4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: { display: false },
+                                title: { display: true, text: 'Histórico de Crescimento da Poupança' }
+                            },
+                            scales: {
+                                x: {
+                                    title: { display: true, text: 'Data' }
+                                },
+                                y: {
+                                    title: { display: true, text: 'Valor Acumulado (R$)' },
+                                    beginAtZero: true
+                                }
+                            }
+                        }
+                    });
+                }
+            };
+            
+            // Function to generate budget suggestions and spending analysis using Gemini API
+            const analyzeAndSuggest = async (type) => {
+                setLoading(true);
+                setGeminiResult(null);
+                
+                const dashboardData = getDashboardData();
+                
+                const promptTemplate = {
+                    'suggestions': "Com base nos seguintes dados de despesas e receitas, forneça 5 a 7 sugestões práticas para um orçamento pessoal mais eficaz e maneiras de economizar dinheiro. Organize as sugestões em tópicos e use um tom informal e motivacional. \n\nDados: ",
+                    'analysis': "Analise os seguintes dados de despesas e receitas. Crie um relatório detalhado em português com 3 a 5 parágrafos. Inclua uma visão geral, os pontos fortes (bons hábitos financeiros), os pontos de melhoria (áreas de gasto excessivo) e uma conclusão resumida sobre o estado financeiro atual. \n\nDados: "
+                };
+                
+                const dataPrompt = JSON.stringify(dashboardData, null, 2);
+                const fullPrompt = promptTemplate[type] + dataPrompt;
+
+                try {
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                    const payload = {
+                        contents: [{ parts: [{ text: fullPrompt }] }],
+                        generationConfig: {
+                            maxOutputTokens: 1024,
+                        }
+                    };
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+                    }
+                    
+                    const result = await response.json();
+                    const textResult = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Não foi possível gerar uma resposta. Tente novamente mais tarde.";
+                    setGeminiResult(textResult);
+
+                } catch (error) {
+                    console.error("Error calling Gemini API:", error);
+                    setGeminiResult("Erro ao gerar a análise. Por favor, verifique sua conexão ou tente novamente.");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // New function to generate a financial plan using Gemini API
+            const generateFinancialPlan = async (e) => {
+                e.preventDefault();
+                setIsPlanning(true);
+                setPlanningResult(null);
+
+                const prompt = `Crie um plano financeiro detalhado e prático para alcançar o seguinte objetivo: "${goalPrompt}" no valor de ${goalValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}. Divida o plano em etapas, como metas de poupança mensais, sugestões de cortes de gastos e estratégias de investimento. Use um tom encorajador e liste os passos de forma clara e objetiva.`;
+
+                try {
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                    const payload = {
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: {
+                            maxOutputTokens: 1500,
+                        }
+                    };
+                    
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    const textResult = result?.candidates?.[0]?.content?.parts?.[0]?.text || "Não foi possível gerar um plano. Tente novamente mais tarde.";
+                    setPlanningResult(textResult);
+
+                } catch (error) {
+                    console.error("Error calling Gemini API for goal planning:", error);
+                    setPlanningResult("Erro ao gerar o plano financeiro. Por favor, tente novamente.");
+                } finally {
+                    setIsPlanning(false);
+                }
+            };
+            
+            // New functions for TTS feature
+            const base64ToArrayBuffer = (base64) => {
+                const binaryString = window.atob(base64);
+                const len = binaryString.length;
+                const bytes = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                return bytes.buffer;
+            };
+
+            const pcmToWav = (pcmData, sampleRate) => {
+                const pcm16 = new Int16Array(pcmData);
+                const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+                const view = new DataView(buffer);
+
+                // RIFF identifier
+                view.setUint32(0, 0x46464952, true);
+                // file length
+                view.setUint32(4, 36 + pcm16.length * 2, true);
+                // RIFF type
+                view.setUint32(8, 0x45564157, true);
+                // format chunk identifier
+                view.setUint32(12, 0x20746d66, true);
+                // format chunk length
+                view.setUint32(16, 16, true);
+                // sample format (1 = PCM)
+                view.setUint16(20, 1, true);
+                // channel count
+                view.setUint16(22, 1, true);
+                // sample rate
+                view.setUint32(24, sampleRate, true);
+                // byte rate (sample rate * block align)
+                view.setUint32(28, sampleRate * 2, true);
+                // block align (bytes per sample)
+                view.setUint16(32, 2, true);
+                // bits per sample
+                view.setUint16(34, 16, true);
+                // data chunk identifier
+                view.setUint32(36, 0x61746164, true);
+                // data chunk length
+                view.setUint32(40, pcm16.length * 2, true);
+
+                // Write PCM data
+                let offset = 44;
+                for (let i = 0; i < pcm16.length; i++, offset += 2) {
+                    view.setInt16(offset, pcm16[i], true);
+                }
+
+                return new Blob([view], { type: 'audio/wav' });
+            };
+
+            const readAnalysisAloud = async () => {
+                if (!geminiResult) {
+                    setTtsError("Nenhuma análise para ler.");
+                    return;
+                }
+                setAudioPlaying(true);
+                setTtsError(null);
+
+                try {
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+                    const payload = {
+                        contents: [{ parts: [{ text: geminiResult }] }],
+                        generationConfig: {
+                            responseModalities: ["AUDIO"],
+                            speechConfig: {
+                                voiceConfig: {
+                                    prebuiltVoiceConfig: { voiceName: "Kore" }
+                                }
+                            }
+                        },
+                        model: "gemini-2.5-flash-preview-tts"
+                    };
+
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`TTS API Error: ${response.status} ${response.statusText}`);
+                    }
+                    
+                    const result = await response.json();
+                    const audioPart = result?.candidates?.[0]?.content?.parts?.[0];
+                    const audioData = audioPart?.inlineData?.data;
+                    const mimeType = audioPart?.inlineData?.mimeType;
+
+                    if (audioData && mimeType && mimeType.startsWith("audio/")) {
+                        const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                        const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 16000;
+                        const pcmData = base64ToArrayBuffer(audioData);
+                        const wavBlob = pcmToWav(pcmData, sampleRate);
+                        const audioUrl = URL.createObjectURL(wavBlob);
+
+                        const audio = new Audio(audioUrl);
+                        audio.play();
+                        audio.onended = () => {
+                            setAudioPlaying(false);
+                            URL.revokeObjectURL(audioUrl);
+                        };
+                    } else {
+                        throw new Error("Invalid audio data from TTS API.");
+                    }
+                } catch (error) {
+                    console.error("Error with TTS:", error);
+                    setTtsError("Erro ao reproduzir o áudio. Tente novamente.");
+                    setAudioPlaying(false);
+                }
+            };
+            
+            useEffect(() => {
+                if (activeTab === 'dashboard') {
+                    const dashboardData = getDashboardData();
+                    generateChart(dashboardData);
+                } else if (activeTab === 'poupanca' && poupanca.length > 0) {
+                    generatePoupancaCharts();
+                }
+            }, [activeTab, contasAPagar, contasAReceber, filtroMes, poupanca]);
+
+            const Modal = () => {
+                if (!modal) return null;
+                return (
+                    <div className="fixed inset-0 bg-gray-900 bg-opacity-70 overflow-y-auto h-full w-full flex items-center justify-center z-50">
+                        <div className="p-6 bg-white rounded-xl shadow-lg w-96 max-w-full text-gray-800">
+                            <h3 className="text-lg font-bold mb-4">{modal.title}</h3>
+                            <p className="text-sm text-gray-700 mb-4">{modal.message}</p>
+                            <div className="mt-4 flex justify-end gap-2">
+                                {modal.type !== 'alert' && (
+                                    <button onClick={closeModal} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                                        Cancelar
+                                    </button>
+                                )}
+                                <button onClick={handleModalAction} className="px-4 py-2 text-sm font-medium text-white bg-green-700 rounded-md hover:bg-green-800">
+                                    {modal.type === 'confirm' ? 'Confirmar' : 'OK'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+            
+            const EditReceitaModal = ({ receita, onClose, onSave }) => {
+                const [valor, setValor] = useState(receita.valor);
+                const [descricao, setDescricao] = useState(receita.descricao);
+                
+                return (
+                    <div className="fixed inset-0 bg-gray-900 bg-opacity-70 overflow-y-auto h-full w-full flex items-center justify-center z-50">
+                        <div className="p-6 bg-gray-800 rounded-xl shadow-lg w-96 max-w-full text-gray-200">
+                            <h3 className="text-lg font-bold mb-4">Editar Receita Recorrente</h3>
+                            <form onSubmit={(e) => { e.preventDefault(); onSave(e); }}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Descrição</label>
+                                    <input
+                                        type="text"
+                                        name="newDescricao"
+                                        value={descricao}
+                                        onChange={(e) => setDescricao(e.target.value)}
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Valor</label>
+                                    <input
+                                        type="number"
+                                        name="newValor"
+                                        step="0.01"
+                                        value={valor}
+                                        onChange={(e) => setValor(parseFloat(e.target.value))}
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mt-4 flex justify-end gap-2">
+                                    <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-400 bg-gray-700 rounded-md hover:bg-gray-600">
+                                        Cancelar
+                                    </button>
+                                    <button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-green-700 rounded-md hover:bg-green-800">
+                                        Salvar
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                );
+            };
+            
+            const EditMetaModal = ({ meta, onClose, onSave }) => {
+                return (
+                    <div className="fixed inset-0 bg-gray-900 bg-opacity-70 overflow-y-auto h-full w-full flex items-center justify-center z-50">
+                        <div className="p-6 bg-gray-800 rounded-xl shadow-lg w-96 max-w-full text-gray-200">
+                            <h3 className="text-lg font-bold mb-4">Editar Meta</h3>
+                            <form onSubmit={onSave}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Descrição</label>
+                                    <input
+                                        type="text"
+                                        name="descricao"
+                                        defaultValue={meta.descricao}
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Valor da Meta</label>
+                                    <input
+                                        type="number"
+                                        name="valorMeta"
+                                        step="0.01"
+                                        defaultValue={meta.valorMeta}
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mt-4 flex justify-end gap-2">
+                                    <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-400 bg-gray-700 rounded-md hover:bg-gray-600">
+                                        Cancelar
+                                    </button>
+                                    <button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-green-700 rounded-md hover:bg-green-800">
+                                        Salvar
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                );
+            };
+
+            const dashboardData = getDashboardData();
+
+            const NegociarDividaModal = ({ divida, onClose, onSave }) => {
+                if (!divida) return null;
+                const valorRestante = divida.valorTotal - divida.valorPago;
+
+                return (
+                    <div className="fixed inset-0 bg-gray-900 bg-opacity-70 overflow-y-auto h-full w-full flex items-center justify-center z-50">
+                        <div className="p-6 bg-gray-800 rounded-xl shadow-lg w-96 max-w-full text-gray-200">
+                            <h3 className="text-lg font-bold mb-4">Negociar Dívida: {divida.descricao}</h3>
+                            <form onSubmit={onSave}>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Valor Total da Negociação</label>
+                                    <input
+                                        type="number"
+                                        name="valorTotal"
+                                        step="0.01"
+                                        defaultValue={valorRestante}
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Nº de Parcelas</label>
+                                    <input
+                                        type="number"
+                                        name="numParcelas"
+                                        min="1"
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Data da 1ª Parcela</label>
+                                    <input
+                                        type="date"
+                                        name="dataPrimeiraParcela"
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Conta para Pagamento</label>
+                                    <select name="banco" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                        {contasBancarias.map(banco => <option key={banco} value={banco}>{banco}</option>)}
+                                    </select>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium mb-1">Proprietário</label>
+                                    <select name="proprietario" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                        <option value="Davi">Davi</option>
+                                        <option value="Marya Clara">Marya Clara</option>
+                                        <option value="Ambos">Ambos</option>
+                                    </select>
+                                </div>
+                                <div className="mt-4 flex justify-end gap-2">
+                                    <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-gray-400 bg-gray-700 rounded-md hover:bg-gray-600">
+                                        Cancelar
+                                    </button>
+                                    <button type="submit" className="px-4 py-2 text-sm font-medium text-white bg-green-700 rounded-md hover:bg-green-800">
+                                        Criar Parcelamento
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                );
+            };
+            
+            const contasFixas = contasAPagar.filter(conta => conta.tipoConta === 'Fixa');
+            const contasDoTipoParcelada = contasAPagar.filter(conta => conta.tipoConta === 'Parcelada');
+            const contasUnicas = contasAPagar.filter(conta => conta.tipoConta === 'Única');
+            
+            const ContasTable = ({ title, contas, onToggle, onDelete, showAcoes = true }) => (
+                <div className="bg-gray-800 p-6 rounded-2xl shadow-md overflow-x-auto mb-6">
+                    <h2 className="text-xl font-bold text-gray-200 mb-4">{title}</h2>
+                    <table className="min-w-full table-auto table-condensed">
+                        <thead>
+                            <tr className="bg-gray-700 text-left">
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs rounded-tl-lg">Descrição</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Tipo</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Valor</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Data</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Conta</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Proprietário</th>
+                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center">Status</th>
+                                {showAcoes && <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center rounded-tr-lg">Ações</th>}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {contas.map(conta => (
+                                <tr key={conta.id} className="border-b border-gray-700">
+                                    <td className="px-4 py-2 text-sm text-gray-300">{conta.descricao}</td>
+                                    <td className="px-4 py-2 text-sm text-gray-300">{conta.tipo}</td>
+                                    <td className={`px-4 py-2 text-sm text-red-500`}>{conta.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                                    <td className="px-4 py-2 text-sm text-gray-300">{conta.dataVencimento || conta.dataRecebimento}</td>
+                                    <td className="px-4 py-2 text-sm text-gray-300">{conta.banco}</td>
+                                    <td className="px-4 py-2 text-sm text-gray-300">{conta.proprietario}</td>
+                                    <td className="px-4 py-2 text-center">
+                                        <span className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${conta.pago || conta.recebido ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+                                            {conta.pago || conta.recebido ? 'Pago/Recebido' : 'Pendente'}
+                                        </span>
+                                    </td>
+                                    {showAcoes && (
+                                        <td className="px-4 py-2 text-center space-x-2">
+                                            <button onClick={() => onToggle(conta.id)} className="text-blue-500 hover:text-blue-700 text-sm font-medium">
+                                                {conta.pago || conta.recebido ? 'Desmarcar' : 'Concluir'}
+                                            </button>
+                                            <button onClick={() => openModal('confirm', 'Confirmar Exclusão', 'Tem certeza que deseja excluir esta conta?', () => handleDeleteContaAPagar(conta.id))} className="text-red-500 hover:text-red-700 text-sm font-medium">
+                                                Excluir
+                                            </button>
+                                        </td>
+                                    )}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {contas.length === 0 && (
+                        <p className="text-center text-gray-500 py-4">Nenhuma conta encontrada nesta categoria.</p>
+                    )}
+                </div>
+            );
+
+            const MetaCard = ({ meta, onAddContribuicao, onEdit, onDelete }) => {
+                const chartRef = useRef(null);
+                const chartInstance = useRef(null);
+
+                useEffect(() => {
+                    if (!chartRef.current) return;
+                    if (chartInstance.current) {
+                        chartInstance.current.destroy();
+                    }
+
+                    const ctx = chartRef.current.getContext('2d');
+                    const valorFaltante = Math.max(0, meta.valorMeta - meta.valorAtual);
+                    
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Valor Guardado', 'Faltante'],
+                            datasets: [{
+                                data: [meta.valorAtual, valorFaltante],
+                                backgroundColor: ['#22c55e', '#ef4444'],
+                                borderColor: ['#1a1a1a'],
+                                borderWidth: 2,
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            cutout: '70%',
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (context) => {
+                                            let label = context.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed !== null) {
+                                                label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    return () => {
+                        if (chartInstance.current) {
+                            chartInstance.current.destroy();
+                        }
+                    };
+                }, [meta]);
+
+                const percentualConcluido = meta.valorMeta > 0 ? (meta.valorAtual / meta.valorMeta) * 100 : 0;
+                const contribuicoesDavi = meta.contribuicoes.filter(c => c.proprietario === 'Davi').reduce((acc, c) => acc + c.valor, 0);
+                const contribuicoesMaryaClara = meta.contribuicoes.filter(c => c.proprietario === 'Marya Clara').reduce((acc, c) => acc + c.valor, 0);
+
+                return (
+                    <div className="bg-gray-900 p-6 rounded-2xl shadow-lg flex flex-col md:flex-row gap-6">
+                        <div className="w-full md:w-1/3 flex flex-col items-center justify-center">
+                            <div className="relative w-40 h-40">
+                                <canvas ref={chartRef}></canvas>
+                                <div className="absolute inset-0 flex items-center justify-center text-xl font-bold text-white">
+                                    {percentualConcluido.toFixed(1)}%
+                                </div>
+                            </div>
+                            <h3 className="text-xl font-bold text-white mt-4 text-center">{meta.descricao}</h3>
+                            <p className="text-sm text-gray-400">Meta: {meta.valorMeta.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                        </div>
+                        <div className="w-full md:w-2/3">
+                            <div className="grid grid-cols-2 gap-4 mb-4 text-center">
+                                <div className="bg-gray-800 p-3 rounded-lg">
+                                    <p className="text-sm text-green-400">Guardado</p>
+                                    <p className="font-bold text-lg">{meta.valorAtual.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                </div>
+                                <div className="bg-gray-800 p-3 rounded-lg">
+                                    <p className="text-sm text-red-400">Falta</p>
+                                    <p className="font-bold text-lg">{(meta.valorMeta - meta.valorAtual).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 mb-4 text-center">
+                                <div className="bg-gray-800 p-3 rounded-lg">
+                                    <p className="text-sm text-yellow-400">Contribuído (Davi)</p>
+                                    <p className="font-bold text-lg">{contribuicoesDavi.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                </div>
+                                <div className="bg-gray-800 p-3 rounded-lg">
+                                    <p className="text-sm text-pink-400">Contribuído (Marya Clara)</p>
+                                    <p className="font-bold text-lg">{contribuicoesMaryaClara.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p>
+                                </div>
+                            </div>
+                            <form onSubmit={(e) => onAddContribuicao(e, meta.id)} className="flex gap-2 mb-4">
+                                <input type="number" name="valor" step="0.01" required placeholder="Valor da Contribuição" className="flex-grow shadow appearance-none border border-gray-700 rounded-lg py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                <input type="date" name="data" required defaultValue={new Date().toISOString().substring(0, 10)} className="shadow appearance-none border border-gray-700 rounded-lg py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                <select name="proprietario" required className="shadow appearance-none border border-gray-700 rounded-lg py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                    <option value="Davi">Davi</option>
+                                    <option value="Marya Clara">Marya Clara</option>
+                                </select>
+                                <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg">Adicionar</button>
+                            </form>
+                            <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+                                {meta.contribuicoes.slice().reverse().map(c => (
+                                    <div key={c.id} className="flex justify-between items-center text-sm p-2 rounded bg-gray-800">
+                                        <span>{new Date(c.data + 'T00:00:00').toLocaleDateString('pt-BR')} ({c.proprietario})</span>
+                                        <span className="font-semibold text-green-400">{c.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="flex justify-end gap-2 mt-4">
+                                <button onClick={() => onEdit(meta)} className="text-yellow-500 hover:text-yellow-700 text-sm font-medium">Editar</button>
+                                <button onClick={() => onDelete(meta.id)} className="text-red-500 hover:text-red-700 text-sm font-medium">Excluir</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            const ListaDespesas = ({ title, contas, color }) => (
+                <div>
+                    <h3 className={`text-lg font-semibold ${color} mb-2`}>{title}</h3>
+                    <div className="bg-gray-900 p-4 rounded-lg h-full flex flex-col">
+                        {contas.length > 0 ? (
+                            <ul className="space-y-2 flex-grow">
+                                {contas.map(conta => (
+                                    <li key={conta.id} className="flex justify-between items-center text-sm p-2 rounded bg-gray-800">
+                                        <span className="truncate pr-2">{conta.descricao}</span>
+                                        <span className="font-semibold text-red-400 whitespace-nowrap">
+                                            {conta.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                        </span>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : (
+                            <p className="text-center text-gray-500 py-4 flex-grow flex items-center justify-center">Nenhuma despesa registrada.</p>
+                        )}
+                        <div className="mt-4 pt-2 border-t border-gray-700 text-right">
+                            <span className="font-bold">Total: </span>
+                            <span className="font-bold text-red-400">
+                                {contas.reduce((acc, c) => acc + c.valor, 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            );
+
+            const RelatorioDespesas = ({ despesasDavi, despesasMaryaClara, despesasAmbos }) => (
+                <div className="mt-8 bg-gray-800 p-6 rounded-2xl shadow-md">
+                    <h2 className="text-2xl font-bold text-gray-200 mb-6 text-center">Relatório Detalhado de Despesas</h2>
+                    <div className="grid md:grid-cols-1 lg:grid-cols-3 gap-6">
+                        <ListaDespesas title="Despesas (Davi)" contas={despesasDavi} color="text-yellow-400" />
+                        <ListaDespesas title="Despesas (Marya Clara)" contas={despesasMaryaClara} color="text-pink-400" />
+                        <ListaDespesas title="Despesas (Ambos)" contas={despesasAmbos} color="text-gray-400" />
+                    </div>
+                </div>
+            );
+
+
+            return (
+                <div className="w-full max-w-7xl mx-auto rounded-2xl shadow-xl p-6 bg-gray-900 text-gray-200">
+                    <h1 className="text-3xl font-extrabold text-white mb-6 text-center">Gestão Financeira Pessoal</h1>
+                    
+                    {/* Tabs */}
+                    <div className="flex justify-center mb-6 border-b border-gray-700">
+                        <button
+                            onClick={() => setActiveTab('dashboard')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'dashboard' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Dashboard
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('contasAPagar')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'contasAPagar' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Contas a Pagar
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('contasAReceber')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'contasAReceber' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Contas a Receber
+                        </button>
+                         <button
+                            onClick={() => setActiveTab('poupanca')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'poupanca' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Poupança
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('dividas')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'dividas' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Dívidas
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('contasBancarias')}
+                            className={`py-3 px-6 text-center text-sm font-medium rounded-t-lg transition-colors duration-200 ${activeTab === 'contasBancarias' ? 'bg-gray-700 text-white shadow-md -mb-px' : 'text-gray-400 hover:text-white'}`}
+                        >
+                            Contas Bancárias
+                        </button>
+                    </div>
+
+                    {/* Dashboard Content */}
+                    {activeTab === 'dashboard' && (
+                        <div>
+                            <div className="mb-6">
+                                <label className="block text-gray-400 text-sm font-bold mb-2" htmlFor="filtroMes">
+                                    Filtrar por Mês:
+                                </label>
+                                <input
+                                    type="month"
+                                    id="filtroMes"
+                                    value={filtroMes}
+                                    onChange={(e) => setFiltroMes(e.target.value)}
+                                    className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-800"
+                                />
+                            </div>
+                            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+                                <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-blue-400">Total a Receber</p>
+                                    <p className="text-2xl font-bold text-blue-200">
+                                        {dashboardData.totalAReceber.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-red-400">Total a Pagar (Geral)</p>
+                                    <p className="text-2xl font-bold text-red-200">
+                                        {dashboardData.totalAPagar.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-gray-400">Saldo do Mês</p>
+                                    <p className={`text-2xl font-bold ${dashboardData.saldoMes >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                        {dashboardData.saldoMes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                                 <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-green-400">Total Recebido</p>
+                                    <p className="text-2xl font-bold text-green-200">
+                                        {dashboardData.totalRecebido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-yellow-400">Despesas (Davi)</p>
+                                    <p className="text-2xl font-bold text-yellow-200">
+                                        {dashboardData.totalDespesasDavi.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                                <div className="bg-gray-800 p-4 rounded-lg shadow-sm">
+                                    <p className="text-sm font-medium text-pink-400">Despesas (Marya Clara)</p>
+                                    <p className="text-2xl font-bold text-pink-200">
+                                        {dashboardData.totalDespesasMaryaClara.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <RelatorioDespesas
+                                despesasDavi={dashboardData.despesasDavi}
+                                despesasMaryaClara={dashboardData.despesasMaryaClara}
+                                despesasAmbos={dashboardData.despesasAmbos}
+                            />
+
+                            <div className="mt-8 bg-gray-800 p-6 rounded-2xl shadow-md">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4 text-center">Despesas por Tipo (Geral)</h2>
+                                <div className="relative h-80">
+                                    <canvas ref={chartRef}></canvas>
+                                </div>
+                            </div>
+                            
+                            {/* Gemini API features */}
+                            <div className="mt-6 flex flex-col md:flex-row gap-6">
+                                {/* Financial Analysis Section */}
+                                <div className="flex-1 bg-gray-800 p-6 rounded-2xl shadow-md flex flex-col">
+                                    <h2 className="text-xl font-bold text-gray-200 mb-4">Análise Financeira (por Gemini)</h2>
+                                    <div className="flex justify-center mb-4 space-x-4">
+                                        <button
+                                            onClick={() => analyzeAndSuggest('suggestions')}
+                                            disabled={loading}
+                                            className="flex items-center justify-center bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 text-center focus:outline-none focus:shadow-outline text-sm"
+                                        >
+                                            {loading ? (
+                                                <svg className="animate-spin h-5 w-5 text-white mr-3" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                            ) : (
+                                                <>✨ Obter Sugestões de Orçamento ✨</>
+                                            )}
+                                        </button>
+                                        <button
+                                            onClick={() => analyzeAndSuggest('analysis')}
+                                            disabled={loading}
+                                            className="flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 text-center focus:outline-none focus:shadow-outline text-sm"
+                                        >
+                                            {loading ? (
+                                                <svg className="animate-spin h-5 w-5 text-white mr-3" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                </svg>
+                                            ) : (
+                                                <>✨ Analisar Gastos ✨</>
+                                            )}
+                                        </button>
+                                    </div>
+                                    {geminiResult && (
+                                        <>
+                                            <p className="text-gray-300 whitespace-pre-wrap">{geminiResult}</p>
+                                            <div className="mt-4 flex justify-end">
+                                                <button
+                                                    onClick={readAnalysisAloud}
+                                                    disabled={audioPlaying}
+                                                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full transition-colors duration-200 text-sm flex items-center"
+                                                >
+                                                    {audioPlaying ? (
+                                                        <svg className="animate-spin h-4 w-4 mr-2" viewBox="0 0 24 24">
+                                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                        </svg>
+                                                    ) : (
+                                                        <>
+                                                            ✨ Ler Análise em Voz Alta ✨
+                                                        </>
+                                                    )}
+                                                </button>
+                                            </div>
+                                            {ttsError && <p className="text-red-500 text-sm mt-2">{ttsError}</p>}
+                                        </>
+                                    )}
+                                </div>
+                                
+                                {/* Goal Planning Section */}
+                                <div className="flex-1 bg-gray-800 p-6 rounded-2xl shadow-md">
+                                    <h2 className="text-xl font-bold text-gray-200 mb-4">Planejador de Objetivos Financeiros</h2>
+                                    <form onSubmit={generateFinancialPlan} className="space-y-4">
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Descreva seu objetivo:</label>
+                                            <input
+                                                type="text"
+                                                value={goalPrompt}
+                                                onChange={(e) => setGoalPrompt(e.target.value)}
+                                                placeholder="Ex: Economizar para uma viagem a Paris"
+                                                required
+                                                className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Valor do objetivo (R$):</label>
+                                            <input
+                                                type="number"
+                                                value={goalValue}
+                                                onChange={(e) => setGoalValue(parseFloat(e.target.value))}
+                                                step="0.01"
+                                                required
+                                                className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                            />
+                                        </div>
+                                        <div className="flex justify-end">
+                                            <button
+                                                type="submit"
+                                                disabled={isPlanning}
+                                                className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-full transition-colors duration-200 focus:outline-none focus:shadow-outline text-sm"
+                                            >
+                                                {isPlanning ? (
+                                                    <svg className="animate-spin h-5 w-5 text-white" viewBox="0 0 24 24">
+                                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                                    </svg>
+                                                ) : (
+                                                    <>✨ Gerar Plano Financeiro ✨</>
+                                                )}
+                                            </button>
+                                        </div>
+                                    </form>
+                                    {planningResult && (
+                                        <div className="mt-6 p-4 bg-gray-700 rounded-lg">
+                                            <p className="text-gray-200 whitespace-pre-wrap">{planningResult}</p>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Contas a Pagar Content */}
+                    {activeTab === 'contasAPagar' && (
+                        <div>
+                            <div className="bg-gray-800 p-6 rounded-2xl shadow-md mb-6">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4">Adicionar Nova Conta</h2>
+                                <div className="grid md:grid-cols-2 gap-4">
+                                    <div className="col-span-2">
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Tipo de Lançamento</label>
+                                        <select
+                                            onChange={(e) => {
+                                                if (e.target.value === 'Parcelada') {
+                                                    document.getElementById('formParcelada').style.display = 'grid';
+                                                    document.getElementById('formUnicaFixa').style.display = 'none';
+                                                } else {
+                                                    document.getElementById('formParcelada').style.display = 'none';
+                                                    document.getElementById('formUnicaFixa').style.display = 'grid';
+                                                }
+                                            }}
+                                            className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                        >
+                                            <option value="Unica">Conta Única ou Fixa</option>
+                                            <option value="Parcelada">Conta Parcelada</option>
+                                        </select>
+                                    </div>
+
+                                    {/* Form for Unique or Fixed Bills */}
+                                    <form id="formUnicaFixa" onSubmit={handleAddContaAPagar} className="md:col-span-2 grid md:grid-cols-3 gap-4">
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Descrição</label>
+                                            <input type="text" name="descricao" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Tipo</label>
+                                            <select name="tipo" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Aluguel">Aluguel</option>
+                                                <option value="Alimentação">Alimentação</option>
+                                                <option value="Transporte">Transporte</option>
+                                                <option value="Saúde">Saúde</option>
+                                                <option value="Educação">Educação</option>
+                                                <option value="Lazer">Lazer</option>
+                                                <option value="Outros">Outros</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Valor</label>
+                                            <input type="number" name="valor" step="0.01" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Data de Vencimento</label>
+                                            <input type="date" name="dataVencimento" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Conta Bancária</label>
+                                            <select name="banco" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                {contasBancarias.map(banco => <option key={banco} value={banco}>{banco}</option>)}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Proprietário</label>
+                                            <select name="proprietario" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Davi">Davi</option>
+                                                <option value="Marya Clara">Marya Clara</option>
+                                                <option value="Ambos">Ambos</option>
+                                            </select>
+                                        </div>
+                                        <div className="col-span-full">
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Frequência</label>
+                                            <select name="tipoConta" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Única">Única</option>
+                                                <option value="Fixa">Fixa (Recorrente)</option>
+                                            </select>
+                                        </div>
+                                        <div className="md:col-span-full text-right">
+                                            <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar</button>
+                                        </div>
+                                    </form>
+
+                                    {/* Form for Installment Bills */}
+                                    <form id="formParcelada" onSubmit={handleAddContaParcelada} className="md:col-span-2 grid md:grid-cols-3 gap-4" style={{display: 'none'}}>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Descrição</label>
+                                            <input type="text" name="descricao" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Tipo</label>
+                                            <select name="tipo" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Aluguel">Aluguel</option>
+                                                <option value="Alimentação">Alimentação</option>
+                                                <option value="Transporte">Transporte</option>
+                                                <option value="Saúde">Saúde</option>
+                                                <option value="Educação">Educação</option>
+                                                <option value="Lazer">Lazer</option>
+                                                <option value="Outros">Outros</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Valor Total</label>
+                                            <input type="number" name="valorTotal" step="0.01" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">N° de Parcelas</label>
+                                            <input type="number" name="numParcelas" min="1" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Data da 1ª Parcela</label>
+                                            <input type="date" name="dataPrimeiraParcela" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Conta Bancária</label>
+                                            <select name="banco" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                {contasBancarias.map(banco => <option key={banco} value={banco}>{banco}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="md:col-span-full">
+                                             <label className="block text-gray-400 text-sm font-bold mb-2">Proprietário</label>
+                                            <select name="proprietario" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Davi">Davi</option>
+                                                <option value="Marya Clara">Marya Clara</option>
+                                                <option value="Ambos">Ambos</option>
+                                            </select>
+                                        </div>
+                                        <div className="md:col-span-full text-right">
+                                            <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar Parcelamento</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                            
+                            {/* Render tables for each category */}
+                            <ContasTable title="Contas Fixas" contas={contasFixas} onToggle={handleTogglePago} onDelete={handleDeleteContaAPagar} />
+                            <ContasTable title="Contas Parceladas" contas={contasDoTipoParcelada} onToggle={handleTogglePago} onDelete={handleDeleteContaAPagar} />
+                            <ContasTable title="Contas Únicas" contas={contasUnicas} onToggle={handleTogglePago} onDelete={handleDeleteContaAPagar} />
+                        </div>
+                    )}
+                    
+                    {/* Contas a Receber Content */}
+                    {activeTab === 'contasAReceber' && (
+                        <div>
+                            <form onSubmit={handleAddContaAReceber} className="grid md:grid-cols-2 gap-4 bg-gray-800 p-6 rounded-2xl shadow-md mb-6">
+                                <div className="md:col-span-2">
+                                    <h2 className="text-xl font-bold text-gray-200 mb-4">Adicionar Conta a Receber</h2>
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Descrição</label>
+                                    <input type="text" name="descricao" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Tipo</label>
+                                    <select name="tipo" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                        <option value="Salário">Salário</option>
+                                        <option value="Serviços">Serviços</option>
+                                        <option value="Vendas">Vendas</option>
+                                        <option value="Rendimentos">Rendimentos</option>
+                                        <option value="Outros">Outros</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Valor</label>
+                                    <input type="number" name="valor" step="0.01" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Data de Recebimento</label>
+                                    <input type="date" name="dataRecebimento" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Conta Bancária</label>
+                                    <select name="banco" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                        {contasBancarias.map(banco => <option key={banco} value={banco}>{banco}</option>)}
+                                    </select>
+                                </div>
+                                <div className="col-span-2">
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Frequência</label>
+                                    <select name="tipoConta" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                        <option value="Única">Única</option>
+                                        <option value="Fixa">Fixa (Recorrente)</option>
+                                    </select>
+                                </div>
+                                <div className="md:col-span-2 text-right">
+                                    <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar</button>
+                                </div>
+                            </form>
+                            <div className="bg-gray-800 p-6 rounded-2xl shadow-md overflow-x-auto">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4">Lista de Contas a Receber</h2>
+                                <table className="min-w-full table-auto table-condensed">
+                                    <thead>
+                                        <tr className="bg-gray-700 text-left">
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs rounded-tl-lg">Descrição</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Tipo</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Valor</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Recebimento</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Conta</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Frequência</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center">Status</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center rounded-tr-lg">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {contasAReceber.map(conta => (
+                                            <tr key={conta.id} className="border-b border-gray-700">
+                                                <td className="px-4 py-2 text-sm text-gray-300">{conta.descricao}</td>
+                                                <td className="px-4 py-2 text-sm text-gray-300">{conta.tipo}</td>
+                                                <td className={`px-4 py-2 text-sm ${conta.valor >= 0 ? 'text-green-500' : 'text-red-500'}`}>{conta.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                                                <td className="px-4 py-2 text-sm text-gray-300">{conta.dataRecebimento}</td>
+                                                <td className="px-4 py-2 text-sm text-gray-300">{conta.banco}</td>
+                                                <td className="px-4 py-2 text-sm text-gray-300">{conta.tipoConta}</td>
+                                                <td className="px-4 py-2 text-center">
+                                                    <span className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${conta.recebido ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+                                                        {conta.recebido ? 'Recebido' : 'Pendente'}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-2 text-center space-x-2">
+                                                    <button onClick={() => handleToggleRecebido(conta.id)} className="text-blue-500 hover:text-blue-700 text-sm font-medium">
+                                                        {conta.recebido ? 'Desmarcar' : 'Receber'}
+                                                    </button>
+                                                    {conta.tipoConta === 'Fixa' && (
+                                                        <button onClick={() => handleEditReceita(contasRecorrentesReceber.find(c => `rec-inc-${c.id}-${filtroMes.split('-')[0]}-${filtroMes.split('-')[1]}` === conta.id))} className="text-yellow-500 hover:text-yellow-700 text-sm font-medium">
+                                                            Editar
+                                                        </button>
+                                                    )}
+                                                    <button onClick={() => openModal('confirm', 'Confirmar Exclusão', 'Tem certeza que deseja excluir esta conta?', () => handleDeleteContaAReceber(conta.id))} className="text-red-500 hover:text-red-700 text-sm font-medium">
+                                                        Excluir
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Poupança Content */}
+                    {activeTab === 'poupanca' && (
+                        <div>
+                            {/* Acompanhamento de Metas */}
+                            <div className="mb-8">
+                                <h2 className="text-2xl font-bold text-white mb-4 text-center">Acompanhamento de Metas</h2>
+                                <form onSubmit={handleAddMeta} className="grid md:grid-cols-3 gap-4 bg-gray-800 p-6 rounded-2xl shadow-md mb-6 items-end">
+                                    <div className="md:col-span-1">
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Descrição da Meta</label>
+                                        <input type="text" name="descricao" required placeholder="Ex: Comprar um carro" className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                    </div>
+                                    <div className="md:col-span-1">
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Valor Total da Meta (R$)</label>
+                                        <input type="number" name="valorMeta" step="0.01" required placeholder="50000" className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                    </div>
+                                    <div className="md:col-span-1 text-right">
+                                        <button type="submit" className="bg-blue-700 hover:bg-blue-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full">Adicionar Nova Meta</button>
+                                    </div>
+                                </form>
+                                <div className="space-y-6">
+                                    {metas.map(meta => (
+                                        <MetaCard key={meta.id} meta={meta} onAddContribuicao={handleAddContribuicao} onEdit={setEditingMeta} onDelete={handleDeleteMeta} />
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <hr className="border-gray-700 my-8"/>
+
+                            {/* Registros Gerais de Poupança */}
+                            <div>
+                                <h2 className="text-2xl font-bold text-white mb-4 text-center">Registros Gerais de Poupança</h2>
+                                <form onSubmit={handleAddPoupanca} className="grid md:grid-cols-2 gap-4 bg-gray-800 p-6 rounded-2xl shadow-md mb-6">
+                                    <div className="md:col-span-2">
+                                        <h3 className="text-xl font-bold text-gray-200 mb-4">Adicionar Registro de Poupança</h3>
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Valor</label>
+                                        <input type="number" name="valor" step="0.01" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Data</label>
+                                        <input type="date" name="data" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Conta Bancária</label>
+                                        <select name="banco" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                            {contasBancarias.map(banco => <option key={banco} value={banco}>{banco}</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-gray-400 text-sm font-bold mb-2">Tipo de Poupança</label>
+                                        <select 
+                                            name="tipo" 
+                                            required 
+                                            value={poupancaTipo}
+                                            onChange={(e) => setPoupancaTipo(e.target.value)}
+                                            className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                        >
+                                            <option value="Reserva de Emergência">Reserva de Emergência</option>
+                                            <option value="Caixa para Contas">Caixa para Contas</option>
+                                            <option value="Investimentos">Investimentos</option>
+                                        </select>
+                                    </div>
+                                    {poupancaTipo === 'Investimentos' && (
+                                        <div className="md:col-span-2">
+                                            <label className="block text-gray-400 text-sm font-bold mb-2">Subtipo de Investimento</label>
+                                            <select name="subtipo" required className="shadow border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700">
+                                                <option value="Renda Fixa">Renda Fixa</option>
+                                                <option value="Renda Variável">Renda Variável</option>
+                                            </select>
+                                        </div>
+                                    )}
+                                    <div className="md:col-span-2 text-right">
+                                        <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar Poupança</button>
+                                    </div>
+                                </form>
+                                <div className="bg-gray-800 p-6 rounded-2xl shadow-md overflow-x-auto mb-6">
+                                    <h2 className="text-xl font-bold text-gray-200 mb-4">Histórico de Registros</h2>
+                                    <table className="min-w-full table-auto table-condensed">
+                                        <thead>
+                                            <tr className="bg-gray-700 text-left">
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs rounded-tl-lg">Tipo</th>
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Subtipo</th>
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Conta</th>
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Valor</th>
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Data</th>
+                                                <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center rounded-tr-lg">Ações</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {poupanca.map(item => (
+                                                <tr key={item.id} className="border-b border-gray-700">
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{item.tipo}</td>
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{item.subtipo || 'N/A'}</td>
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{item.banco}</td>
+                                                    <td className={`px-4 py-2 text-sm text-green-500`}>{item.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{item.data}</td>
+                                                    <td className="px-4 py-2 text-center space-x-2">
+                                                        <button onClick={() => openModal('confirm', 'Confirmar Exclusão', 'Tem certeza que deseja excluir este registro?', () => handleDeletePoupanca(item.id))} className="text-red-500 hover:text-red-700 text-sm font-medium">
+                                                            Excluir
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                
+                                {poupanca.length > 0 && (
+                                    <div className="grid md:grid-cols-2 gap-6 mb-6">
+                                        <div className="bg-gray-800 p-6 rounded-2xl shadow-md">
+                                            <div className="relative h-80">
+                                                <canvas ref={chartPoupancaTiposRef}></canvas>
+                                            </div>
+                                        </div>
+                                        <div className="bg-gray-800 p-6 rounded-2xl shadow-md">
+                                            <div className="relative h-80">
+                                                <canvas ref={chartPoupancaBancosRef}></canvas>
+                                            </div>
+                                        </div>
+                                        <div className="md:col-span-2 bg-gray-800 p-6 rounded-2xl shadow-md">
+                                            <div className="relative h-80">
+                                                <canvas ref={chartPoupancaHistoricoRef}></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+
+                    {/* Contas Bancárias Content */}
+                    {activeTab === 'contasBancarias' && (
+                        <div>
+                            <form onSubmit={handleAddBanco} className="bg-gray-800 p-6 rounded-2xl shadow-md mb-6">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4">Adicionar Nova Conta Bancária</h2>
+                                <div className="flex flex-col sm:flex-row gap-4">
+                                    <input
+                                        type="text"
+                                        name="nomeBanco"
+                                        placeholder="Nome da Conta (ex: Banco Inter)"
+                                        required
+                                        className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700"
+                                    />
+                                    <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar</button>
+                                </div>
+                            </form>
+                            <div className="bg-gray-800 p-6 rounded-2xl shadow-md">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4">Lista de Contas Bancárias</h2>
+                                <table className="min-w-full table-auto table-condensed">
+                                    <thead>
+                                        <tr className="bg-gray-700 text-left">
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs rounded-tl-lg">Nome da Conta</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center rounded-tr-lg">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {contasBancarias.map(banco => (
+                                            <tr key={banco} className="border-b border-gray-700">
+                                                <td className="px-4 py-2 text-sm text-gray-300">{banco}</td>
+                                                <td className="px-4 py-2 text-center">
+                                                    <button onClick={() => handleDeleteBanco(banco)} className="text-red-500 hover:text-red-700 text-sm font-medium">
+                                                        Excluir
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* Dívidas Content */}
+                    {activeTab === 'dividas' && (
+                        <div>
+                            <form onSubmit={handleAddDivida} className="grid md:grid-cols-3 gap-4 bg-gray-800 p-6 rounded-2xl shadow-md mb-6 items-end">
+                                <div className="md:col-span-3">
+                                    <h2 className="text-xl font-bold text-gray-200 mb-4">Adicionar Nova Dívida</h2>
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Descrição</label>
+                                    <input type="text" name="descricao" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Valor Total</label>
+                                    <input type="number" name="valorTotal" step="0.01" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div>
+                                    <label className="block text-gray-400 text-sm font-bold mb-2">Data de Início</label>
+                                    <input type="date" name="dataInicio" required className="shadow appearance-none border border-gray-700 rounded-lg w-full py-2 px-3 text-gray-200 leading-tight focus:outline-none focus:shadow-outline bg-gray-700" />
+                                </div>
+                                <div className="md:col-span-3 text-right">
+                                    <button type="submit" className="bg-green-700 hover:bg-green-800 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline">Adicionar Dívida</button>
+                                </div>
+                            </form>
+
+                            <div className="bg-gray-800 p-6 rounded-2xl shadow-md overflow-x-auto">
+                                <h2 className="text-xl font-bold text-gray-200 mb-4">Lista de Dívidas</h2>
+                                <table className="min-w-full table-auto table-condensed">
+                                    <thead>
+                                        <tr className="bg-gray-700 text-left">
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs rounded-tl-lg">Descrição</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Valor Total</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Valor Restante</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs">Data Início</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center">Status</th>
+                                            <th className="px-4 py-2 text-gray-300 font-semibold text-xs text-center rounded-tr-lg">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {dividas.map(divida => {
+                                            const valorRestante = divida.valorTotal - divida.valorPago;
+                                            return (
+                                                <tr key={divida.id} className="border-b border-gray-700">
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{divida.descricao}</td>
+                                                    <td className={`px-4 py-2 text-sm text-gray-300`}>{divida.valorTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                                                    <td className={`px-4 py-2 text-sm text-red-500 font-bold`}>{valorRestante.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                                                    <td className="px-4 py-2 text-sm text-gray-300">{divida.dataInicio}</td>
+                                                    <td className="px-4 py-2 text-center">
+                                                        <span className={`inline-block px-3 py-1 text-xs font-semibold rounded-full ${divida.status === 'Ativa' ? 'bg-red-600 text-white' : 'bg-yellow-600 text-white'}`}>
+                                                            {divida.status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-2 text-center space-x-2">
+                                                        {divida.status === 'Ativa' && (
+                                                            <button onClick={() => setModalNegociar(divida)} className="text-blue-500 hover:text-blue-700 text-sm font-medium">
+                                                                Negociar
+                                                            </button>
+                                                        )}
+                                                        <button onClick={() => handleDeleteDivida(divida.id)} className="text-red-500 hover:text-red-700 text-sm font-medium">
+                                                            Excluir
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                    
+                    <Modal />
+                    {editingReceita && (
+                        <EditReceitaModal receita={editingReceita} onClose={() => setEditingReceita(null)} onSave={handleSaveEditReceita} />
+                    )}
+                    {editingMeta && (
+                        <EditMetaModal meta={editingMeta} onClose={() => setEditingMeta(null)} onSave={handleUpdateMeta} />
+                    )}
+                    {modalNegociar && (
+                        <NegociarDividaModal divida={modalNegociar} onClose={() => setModalNegociar(null)} onSave={handleNegociarDivida} />
+                    )}
+                </div>
+            );
+        };
+        
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
